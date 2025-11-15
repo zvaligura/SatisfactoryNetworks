@@ -1,0 +1,150 @@
+local filesystem = require("filesystem")
+
+--------------------------------------------------
+-- CONFIG: change only COMPUTER_ID per computer
+--------------------------------------------------
+
+-- This is the logical name for this computer.
+-- It should match a folder under computers/ in your repo.
+-- Example: computers/hub-power/main.lua
+local COMPUTER_ID   = "hub-power"
+
+-- GitHub repo settings
+local GITHUB_USER   = "zvaligura"
+local GITHUB_REPO   = "SatisfactoryNetworks"
+local GITHUB_BRANCH = "main"   -- change if you use a different branch
+
+-- Where in the repo each computer's main script lives
+local COMPUTER_SCRIPT_PATH = "/computers/" .. COMPUTER_ID .. "/main.lua"
+
+-- Where to store the downloaded script on the in-game drive
+local LOCAL_SCRIPT_PATH = "/boot/main.lua"
+
+--------------------------------------------------
+-- Helpers: filesystem and internet
+--------------------------------------------------
+
+local function find_internet_card()
+    -- Internet Card is a PCI device of class FINInternetCard
+    -- Pattern based on the Internet Card example in the FIN docs 
+    local cards = computer.getPCIDevices(classes.FINInternetCard)
+    if not cards or #cards == 0 then
+        return nil, "No Internet Card found"
+    end
+    return cards[1]
+end
+
+local function init_fs()
+    -- Standard pattern: init FS and mount a drive as root. 
+    filesystem.initFileSystem("/dev")
+
+    local devs = filesystem.childs("/dev")
+    if not devs or #devs == 0 then
+        return nil, "No devices in /dev"
+    end
+
+    local disk = nil
+    for _, name in ipairs(devs) do
+        if name ~= "serial" then
+            disk = name
+            break
+        end
+    end
+
+    if not disk then
+        return nil, "No disk drive found (only serial)"
+    end
+
+    filesystem.mount("/dev/" .. disk, "/")
+    return true
+end
+
+local function build_raw_url(path)
+    -- No leading slash in the path for raw.githubusercontent
+    -- Repo path is something like: computers/hub-power/main.lua
+    if path:sub(1, 1) == "/" then
+        path = path:sub(2)
+    end
+
+    return "https://raw.githubusercontent.com/"
+        .. GITHUB_USER .. "/"
+        .. GITHUB_REPO .. "/"
+        .. GITHUB_BRANCH .. "/"
+        .. path
+end
+
+local function download_file(card, repoPath, localPath)
+    local url = build_raw_url(repoPath)
+    print("Downloading", url)
+
+    -- Request body is empty for GET. Example matches docs: request + await. 
+    local req = card:request(url, "GET", "")
+    local ok, body = req:await()
+
+    if not ok then
+        return nil, "HTTP failed: " .. tostring(body)
+    end
+
+    local file, err = filesystem.open(localPath, "w")
+    if not file then
+        return nil, "Failed to open " .. localPath .. ": " .. tostring(err)
+    end
+
+    file:write(body)
+    file:close()
+
+    print("Saved to", localPath)
+    return true
+end
+
+local function run_script(path)
+    print("Running", path)
+    local ok, err = pcall(function()
+        filesystem.doFile(path)
+    end)
+    if not ok then
+        print("Error running script:", err)
+    end
+end
+
+--------------------------------------------------
+-- Main boot logic
+--------------------------------------------------
+
+local function main()
+    print("FIN net-boot")
+    print("Computer ID: " .. COMPUTER_ID)
+
+    local ok, err = init_fs()
+    if not ok then
+        error("Filesystem init failed: " .. tostring(err))
+    end
+
+    local card, ierr = find_internet_card()
+    if not card then
+        print("Warning:", ierr)
+        print("Trying cached script only")
+        if filesystem.exists(LOCAL_SCRIPT_PATH) then
+            run_script(LOCAL_SCRIPT_PATH)
+        else
+            error("No internet card and no cached script at " .. LOCAL_SCRIPT_PATH)
+        end
+        return
+    end
+
+    -- Try to pull latest. If it fails, fall back to cached copy if present.
+    local ok_dl, dl_err = download_file(card, COMPUTER_SCRIPT_PATH, LOCAL_SCRIPT_PATH)
+    if not ok_dl then
+        print("Download failed:", dl_err)
+        if filesystem.exists(LOCAL_SCRIPT_PATH) then
+            print("Using cached script")
+            run_script(LOCAL_SCRIPT_PATH)
+        else
+            error("No script available to run")
+        end
+    else
+        run_script(LOCAL_SCRIPT_PATH)
+    end
+end
+
+main()
