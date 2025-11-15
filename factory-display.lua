@@ -1,12 +1,26 @@
 -- factory-display.lua
 -- Discover all Manufacturer buildings and render a summary on a screen.
+-- Auto refresh every 60s, and on button press on a control panel.
 
 ------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------
 
--- Nick of the Large Screen you want to use
+-- Screen nick (your large display)
 local SCREEN_NICK = "Video Wall"
+
+-- Control panel nick (the panel that has your refresh button)
+local PANEL_NICK  = "Factory Overview Panel"   -- change to your panel's nick
+
+-- Button position on that panel
+-- For a Large Control Panel, leave BTN_PANEL_INDEX as nil and use (x, y)
+-- For a Large Vertical Control Panel, set BTN_PANEL_INDEX = 0, 1 or 2
+local BTN_X            = 0
+local BTN_Y            = 0
+local BTN_PANEL_INDEX  = nil     -- nil for Large Control Panel, 0/1/2 for Vertical
+
+-- Auto refresh interval in seconds
+local REFRESH_INTERVAL = 60
 
 -- Optional: cap the max number of data rows printed
 local MAX_ROWS = 200
@@ -40,7 +54,7 @@ end
 ------------------------------------------------------
 
 local function scan_manufacturers()
-    -- Manufacturer is the base for all recipe-using machines (constructors, etc) 
+    -- Manufacturer is the base for all recipe-using machines (constructors, etc)
     local ids = component.findComponent(classes.Manufacturer)
     local manufacturers = component.proxy(ids or {})
 
@@ -48,11 +62,11 @@ local function scan_manufacturers()
     local total = 0
 
     for _, m in ipairs(manufacturers) do
-        -- Building type via reflection getType().internalName 
+        -- Building type via reflection getType().internalName
         local t = m:getType()
         local buildingType = (t and t.internalName) or "UnknownBuilding"
 
-        -- Current recipe via Manufacturer.getRecipe().internalName 
+        -- Current recipe via Manufacturer.getRecipe().internalName
         local recipeClass = m:getRecipe()
         local recipeName = (recipeClass and recipeClass.internalName) or "<no recipe>"
 
@@ -75,7 +89,7 @@ end
 ------------------------------------------------------
 
 local function init_gpu_screen()
-    -- get first GPU T1 from PCI devices 
+    -- get first GPU T1 from PCI devices
     local gpu = computer.getPCIDevices(classes.GPUT1)[1]
     if not gpu then
         error("No GPU T1 found in this computer")
@@ -83,23 +97,23 @@ local function init_gpu_screen()
 
     local screen
 
-    -- 1) Try to find the nicked screen "Video Wall" on the network 
-    local ids = component.findComponent(SCREEN_NICK)
-    if ids and #ids > 0 then
+    -- 1) Try to find the nicked screen "Video Wall" on the network
+    local ids = { component.findComponent(SCREEN_NICK) }
+    if #ids > 0 then
         screen = component.proxy(ids[1])
         log("Using screen by nick: " .. SCREEN_NICK)
     end
 
     -- 2) If that fails, fall back to computer screen driver
     if not screen then
-        local pciScreen = computer.getPCIDevices(classes["FINComputerScreen"])[1]
+        local pciScreen = computer.getPCIDevices(classes.FINComputerScreen)[1]
         if pciScreen then
             screen = pciScreen
             log("Using computer screen driver (no '" .. SCREEN_NICK .. "' found)")
         end
     end
 
-    -- 3) If still no screen, fall back to first Screen component on network 
+    -- 3) If still no screen, fall back to first Screen component on network
     if not screen then
         local compId = component.findComponent(classes.Screen)[1]
         if not compId then
@@ -109,7 +123,7 @@ local function init_gpu_screen()
         log("Using first Screen component (no nicked screen or ScreenDriver found)")
     end
 
-    -- Bind GPU to the chosen screen 
+    -- Bind GPU to the chosen screen
     gpu:bindScreen(screen)
     local w, h = gpu:getSize()
 
@@ -119,6 +133,54 @@ local function init_gpu_screen()
     gpu:flush()
 
     return gpu, w, h
+end
+
+------------------------------------------------------
+-- CONTROL PANEL BUTTON SETUP
+------------------------------------------------------
+
+local function init_panel_button()
+    if not PANEL_NICK or PANEL_NICK == "" then
+        log("No PANEL_NICK configured, button refresh disabled")
+        return nil, nil
+    end
+
+    local ids = { component.findComponent(PANEL_NICK) }
+    if #ids == 0 then
+        log("No panel found with nick '" .. PANEL_NICK .. "', button refresh disabled")
+        return nil, nil
+    end
+
+    local panel = component.proxy(ids[1])
+    if not panel then
+        log("Failed to proxy panel '" .. PANEL_NICK .. "', button refresh disabled")
+        return nil, nil
+    end
+
+    local button
+    if BTN_PANEL_INDEX == nil then
+        -- Large Control Panel: getModule(x, y)
+        button = panel:getModule(BTN_X, BTN_Y)
+    else
+        -- Large Vertical Control Panel: getModule(x, y, panelIndex)
+        button = panel:getModule(BTN_X, BTN_Y, BTN_PANEL_INDEX)
+    end
+
+    if not button then
+        log("No module at (" .. BTN_X .. "," .. BTN_Y
+            .. (BTN_PANEL_INDEX and ("," .. BTN_PANEL_INDEX) or "")
+            .. ") on panel '" .. PANEL_NICK .. "'")
+        return panel, nil
+    end
+
+    -- Clear any old listeners and then listen to this button
+    if event.ignoreAll then event.ignoreAll() end
+    if event.clear then event.clear() end
+
+    event.listen(button)
+    log("Listening for button 'Trigger' on panel '" .. PANEL_NICK .. "'")
+
+    return panel, button
 end
 
 ------------------------------------------------------
@@ -232,24 +294,48 @@ local function draw_table(gpu, w, h, stats, total)
 end
 
 ------------------------------------------------------
--- MAIN
+-- MAIN LOOP
 ------------------------------------------------------
 
-local function main()
-    log("Scanning manufacturers on this network...")
+local function refresh(gpu, w, h)
     local stats, total = scan_manufacturers()
-    log("Scan done, found " .. tostring(total) .. " manufacturers")
+    draw_table(gpu, w, h, stats, total)
+    log("Display refreshed")
+end
+
+local function main()
+    log("Starting factory display")
 
     local gpu, w, h = init_gpu_screen()
     log("Screen '" .. SCREEN_NICK .. "' size: " .. w .. "x" .. h)
 
-    draw_table(gpu, w, h, stats, total)
+    local _, button = init_panel_button()
 
-    log("Display updated on '" .. SCREEN_NICK .. "'")
+    -- Initial draw
+    refresh(gpu, w, h)
+    local lastScan = computer.uptime and computer.uptime() or 0
 
-    -- Idle so the computer stays running.
     while true do
-        event.pull(5)
+        local now = computer.uptime and computer.uptime() or lastScan
+        local elapsed = now - lastScan
+        local timeout = REFRESH_INTERVAL - elapsed
+        if timeout < 0 then timeout = 0 end
+
+        -- Wait for either a signal or the timeout
+        local ev, sender = event.pull(timeout)
+
+        if not ev then
+            -- Timeout hit, do periodic refresh
+            refresh(gpu, w, h)
+            lastScan = computer.uptime and computer.uptime() or lastScan
+        else
+            -- Got some event
+            if button and sender == button and ev == "Trigger" then
+                log("Button Trigger pressed, refreshing now")
+                refresh(gpu, w, h)
+                lastScan = computer.uptime and computer.uptime() or lastScan
+            end
+        end
     end
 end
 
