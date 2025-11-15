@@ -1,14 +1,30 @@
 -- computer-run.lua
--- EEPROM code that fetches and runs a Lua file from GitHub
+-- Minimal FIN net-loader that pulls a Lua file from GitHub and runs it.
 
--- Edit these four values per computer if you want:
+-------------------------------------------------
+-- CONFIG - edit per computer
+-------------------------------------------------
 local GITHUB_USER   = "zvaligura"
 local GITHUB_REPO   = "SatisfactoryNetworks"
 local GITHUB_BRANCH = "main"
+
+-- Path *inside the repo* to the Lua file you want this computer to run.
+-- For now we keep it simple and point at a single file in the root:
+--   https://raw.githubusercontent.com/<user>/<repo>/<branch>/light-test.lua
+-- Change this per computer later.
 local TARGET_FILE   = "light-test.lua"
+-------------------------------------------------
 
 local function log(level, msg)
     print("[" .. level .. "] " .. msg)
+end
+
+local function buildUrl()
+    return "https://raw.githubusercontent.com/"
+        .. GITHUB_USER .. "/"
+        .. GITHUB_REPO .. "/"
+        .. GITHUB_BRANCH .. "/"
+        .. TARGET_FILE
 end
 
 local function main()
@@ -17,33 +33,33 @@ local function main()
     log("Info", "Branch: " .. GITHUB_BRANCH)
     log("Info", "Target: " .. TARGET_FILE)
 
-    -- Get internet card via classes.FINInternetCard
-    local devices = computer.getPCIDevices(classes.FINInternetCard)
-    local card = devices and devices[1]
+    -- Get Internet Card (official pattern) 
+    local cards = computer.getPCIDevices(classes.FINInternetCard)
+    local internet = cards and cards[1]
 
-    if not card then
+    if not internet then
         log("Fatal", "No FINInternetCard found in this computer")
         computer.beep(0.3)
         return
     end
 
-    local url =
-        "https://raw.githubusercontent.com/"
-        .. GITHUB_USER .. "/"
-        .. GITHUB_REPO .. "/"
-        .. GITHUB_BRANCH .. "/"
-        .. TARGET_FILE
-
+    local url = buildUrl()
     log("Info", "Requesting: " .. url)
 
-    -- Make HTTP request
-    local req = card:request(url, "GET", "")
-    -- await() returns whatever the HTTP call returns.
-    -- The official example ignores the first value, so we do the same pattern.
-    local ok, data = req:await()
+    -- Follows the FicsIt-OS bootstrap style:
+    --   code, data = internet:request(...):await()
+    -- where code is HTTP status, data is response body. 
+    local code, data = internet:request(url, "GET", ""):await()
 
-    if not data then
-        log("Fatal", "Request failed or returned no data. First return value was: " .. tostring(ok))
+    if code ~= 200 then
+        log("Fatal", "HTTP " .. tostring(code) .. " while fetching script")
+        log("Fatal", "Check that " .. TARGET_FILE .. " exists in the repo/branch")
+        computer.beep(0.3)
+        return
+    end
+
+    if type(data) ~= "string" then
+        log("Fatal", "Unexpected response body type: " .. type(data))
         computer.beep(0.3)
         return
     end
@@ -59,9 +75,9 @@ local function main()
 
     log("Info", "Running " .. TARGET_FILE)
 
-    local ok_run, err_run = pcall(chunk)
-    if not ok_run then
-        log("Fatal", "Runtime error in " .. TARGET_FILE .. ": " .. tostring(err_run))
+    local ok, runErr = pcall(chunk)
+    if not ok then
+        log("Fatal", "Runtime error in " .. TARGET_FILE .. ": " .. tostring(runErr))
         computer.beep(0.3)
         return
     end

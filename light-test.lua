@@ -1,96 +1,69 @@
 -- light-test.lua
--- Simple test that blinks an indicator module on a Large Control Panel
+-- Blink a single indicator-like module on a Large Control Panel
 
-local PANEL_CLASS = classes.LargeControlPanel
-
--- Change these if your indicator is in a different slot
-local MODULE_X = 0
-local MODULE_Y = 0
-local MODULE_PANEL_INDEX = 0   -- Large Control Panel uses 0 as the panel index
+-- Slot of the indicator module on the panel.
+-- For a Large Control Panel, panel index is usually 0.
+local MODULE_X           = 0
+local MODULE_Y           = 0
+local MODULE_PANEL_INDEX = 0
 
 local function log(msg)
     print("[light-test] " .. msg)
 end
 
-local function getPanel()
-    local ids = component.findComponent(PANEL_CLASS)
-    if not ids or #ids == 0 then
-        log("No LargeControlPanel found on the network")
-        return nil
-    end
-
-    if #ids > 1 then
-        log("Multiple panels found, using the first one")
-    end
-
-    return component.proxy(ids[1])
+-- Get first LargeControlPanel on the network (same pattern as Light Switch example)
+local panels = component.proxy(component.findComponent(classes.LargeControlPanel))
+if not panels or #panels == 0 then
+    log("No LargeControlPanel found on the network")
+    computer.beep(0.3)
+    return
 end
 
-local function getIndicator(panel)
-    local m = panel:getModule(MODULE_X, MODULE_Y, MODULE_PANEL_INDEX)
-    if not m then
-        log("No module at " .. MODULE_X .. ", " .. MODULE_Y .. ", " .. MODULE_PANEL_INDEX)
-        return nil
-    end
+local panel = panels[1]
+log("Using panel: " .. tostring(panel))
 
-    if not m.setColor then
-        log("Module at that slot has no setColor function")
-        return nil
-    end
-
-    return m
+-- Use Modular Control Panel API: getModule(x, y, panelIndex) 
+local indicator = panel:getModule(MODULE_X, MODULE_Y, MODULE_PANEL_INDEX)
+if not indicator then
+    log("No module at (" .. MODULE_X .. ", " .. MODULE_Y .. ", " .. MODULE_PANEL_INDEX .. ")")
+    computer.beep(0.3)
+    return
 end
 
-local function setOff(ind)
-    ind:setColor(0, 0, 0, 0)
+-- IndicatorModule exposes setColor(Red,Green,Blue,Emit) 
+if not indicator.setColor then
+    log("Module at that slot has no setColor; is it an Indicator or Button?")
+    computer.beep(0.3)
+    return
 end
 
-local function setOn(ind)
-    -- Green, bright
-    ind:setColor(0, 1, 0, 10)
+log("Found indicator-like module at slot")
+
+local function setOn()
+    -- bright green
+    indicator:setColor(0, 1, 0, 5)
 end
 
-local function blink(ind, times)
-    times = times or 5
+local function setOff()
+    indicator:setColor(0, 0, 0, 0)
+end
 
-    -- If the event module is missing, just turn it on once
-    if not event or not event.pull then
-        log("event.pull not available, turning indicator on solid instead")
-        setOn(ind)
-        return
-    end
+local function blink(times, interval)
+    times    = times or 6
+    interval = interval or 0.5
 
+    -- Use event.pull with timeout so we do not block the event system completely 
     for i = 1, times do
-        setOn(ind)
-        -- This assumes event.pull supports a timeout.
-        -- If your version does not, change event.pull(0.5) to plain event.pull().
-        event.pull(0.5)
-        setOff(ind)
-        event.pull(0.5)
+        setOn()
+        event.pull(interval)
+        setOff()
+        event.pull(interval)
     end
+
+    -- Leave it on at the end as a success indicator
+    setOn()
 end
 
-local function main()
-    log("light-test starting")
-
-    local panel = getPanel()
-    if not panel then
-        computer.beep(0.2)
-        return
-    end
-
-    local ind = getIndicator(panel)
-    if not ind then
-        computer.beep(0.4)
-        return
-    end
-
-    computer.beep(1.0)
-    log("Blinking indicator")
-    blink(ind, 6)
-
-    setOn(ind)
-    log("Done, indicator left on")
-end
-
-main()
+log("Starting blink test")
+blink(6, 0.3)
+log("Blink test finished; indicator should be solid green now")
