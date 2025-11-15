@@ -11,7 +11,9 @@ local function log(msg)
     print("[light-test] " .. msg)
 end
 
--- Get first LargeControlPanel on the network (same pattern as Light Switch example)
+log("light-test starting")
+
+-- Get first LargeControlPanel on the network
 local panels = component.proxy(component.findComponent(classes.LargeControlPanel))
 if not panels or #panels == 0 then
     log("No LargeControlPanel found on the network")
@@ -22,15 +24,14 @@ end
 local panel = panels[1]
 log("Using panel: " .. tostring(panel))
 
--- Use Modular Control Panel API: getModule(x, y, panelIndex) 
+-- Use Modular Control Panel API: getModule(x, y, panelIndex)
 local indicator = panel:getModule(MODULE_X, MODULE_Y, MODULE_PANEL_INDEX)
 if not indicator then
-    log("No module at (" .. MODULE_X .. ", " .. MODULE_Y .. ", " .. MODULE_PANEL_INDEX .. ")")
+    log("No module at " .. MODULE_X .. ", " .. MODULE_Y .. ", " .. MODULE_PANEL_INDEX)
     computer.beep(0.3)
     return
 end
 
--- IndicatorModule exposes setColor(Red,Green,Blue,Emit) 
 if not indicator.setColor then
     log("Module at that slot has no setColor; is it an Indicator or Button?")
     computer.beep(0.3)
@@ -48,22 +49,16 @@ local function setOff()
     indicator:setColor(0, 0, 0, 0)
 end
 
-local function blink(times, interval)
-    times    = times or 6
+local function blink_forever(interval)
     interval = interval or 0.5
 
-    -- Use event.pull with timeout so we do not block the event system completely 
-    for i = 1, times do
+    while true do
         setOn()
         event.pull(interval)
         setOff()
         event.pull(interval)
     end
-
-    -- Leave it on at the end as a success indicator
-    setOn()
 end
 
-log("Starting blink test")
-blink(6, 0.3)
-log("Blink test finished; indicator should be solid green now")
+log("Starting infinite blink")
+blink_forever(0.3)
