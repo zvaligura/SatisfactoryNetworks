@@ -1,16 +1,18 @@
 -- factory-display.lua
--- Discover all Manufacturer buildings on this network
--- and render a table on a screen using the GPU.
+-- Discover all Manufacturer buildings and render a summary on a screen.
 
 ------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------
 
+-- Nick of the Large Screen you want to use
+local SCREEN_NICK = "Video Wall"
+
 -- Optional: cap the max number of data rows printed
 local MAX_ROWS = 200
 
 ------------------------------------------------------
--- HELPERS: table printing formatting
+-- SMALL HELPERS
 ------------------------------------------------------
 
 local function padRight(s, n)
@@ -38,8 +40,7 @@ end
 ------------------------------------------------------
 
 local function scan_manufacturers()
-    -- Manufacturer is the base class for all recipe-using machines
-    -- (constructors, assemblers, refineries, etc.) 
+    -- Manufacturer is the base for all recipe-using machines (constructors, etc) 
     local ids = component.findComponent(classes.Manufacturer)
     local manufacturers = component.proxy(ids or {})
 
@@ -47,7 +48,7 @@ local function scan_manufacturers()
     local total = 0
 
     for _, m in ipairs(manufacturers) do
-        -- Building type via getType().internalName 
+        -- Building type via reflection getType().internalName 
         local t = m:getType()
         local buildingType = (t and t.internalName) or "UnknownBuilding"
 
@@ -70,32 +71,49 @@ local function scan_manufacturers()
 end
 
 ------------------------------------------------------
--- GPU + SCREEN SETUP (Random Plot pattern)
+-- GPU + SCREEN SETUP (bind to "Video Wall")
 ------------------------------------------------------
 
 local function init_gpu_screen()
-    -- get first T1 GPU available from PCI-Interface 
+    -- get first GPU T1 from PCI devices 
     local gpu = computer.getPCIDevices(classes.GPUT1)[1]
     if not gpu then
-        error("No GPU T1 found!")
+        error("No GPU T1 found in this computer")
     end
 
-    -- get first Screen-Driver available from PCI-Interface
-    local screen = computer.getPCIDevices(classes["FINComputerScreen"])[1]
-    -- if no screen found, try to find large screen from component network 
+    local screen
+
+    -- 1) Try to find the nicked screen "Video Wall" on the network 
+    local ids = component.findComponent(SCREEN_NICK)
+    if ids and #ids > 0 then
+        screen = component.proxy(ids[1])
+        log("Using screen by nick: " .. SCREEN_NICK)
+    end
+
+    -- 2) If that fails, fall back to computer screen driver
+    if not screen then
+        local pciScreen = computer.getPCIDevices(classes["FINComputerScreen"])[1]
+        if pciScreen then
+            screen = pciScreen
+            log("Using computer screen driver (no '" .. SCREEN_NICK .. "' found)")
+        end
+    end
+
+    -- 3) If still no screen, fall back to first Screen component on network 
     if not screen then
         local compId = component.findComponent(classes.Screen)[1]
         if not compId then
-            error("No Screen found!")
+            error("No Screen found at all (no '" .. SCREEN_NICK .. "', no ScreenDriver, no Large Screen)")
         end
         screen = component.proxy(compId)
+        log("Using first Screen component (no nicked screen or ScreenDriver found)")
     end
 
-    -- setup gpu
+    -- Bind GPU to the chosen screen 
     gpu:bindScreen(screen)
     local w, h = gpu:getSize()
 
-    -- clear screen
+    -- Clear the screen
     gpu:setBackground(0, 0, 0, 0)
     gpu:fill(0, 0, w, h, " ")
     gpu:flush()
@@ -117,7 +135,6 @@ local function draw_table(gpu, w, h, stats, total)
         if y >= h then
             return false
         end
-        -- Truncate to screen width
         if #text > w then
             text = text:sub(1, w)
         end
@@ -128,7 +145,7 @@ local function draw_table(gpu, w, h, stats, total)
     local row = 0
 
     -- Title
-    drawLine(row, "Factory Overview")
+    drawLine(row, "Factory Overview (" .. SCREEN_NICK .. ")")
     row = row + 2
 
     -- Header
@@ -219,20 +236,18 @@ end
 ------------------------------------------------------
 
 local function main()
-    log("Starting factory display scan...")
-
+    log("Scanning manufacturers on this network...")
     local stats, total = scan_manufacturers()
-    log("Scan done, manufacturers: " .. tostring(total))
+    log("Scan done, found " .. tostring(total) .. " manufacturers")
 
     local gpu, w, h = init_gpu_screen()
-    log("Screen size: " .. w .. "x" .. h)
+    log("Screen '" .. SCREEN_NICK .. "' size: " .. w .. "x" .. h)
 
     draw_table(gpu, w, h, stats, total)
 
-    log("Display updated.")
+    log("Display updated on '" .. SCREEN_NICK .. "'")
 
-    -- Keep the program alive so the computer stays "running".
-    -- This doesn't change the screen anymore, just idles.
+    -- Idle so the computer stays running.
     while true do
         event.pull(5)
     end
