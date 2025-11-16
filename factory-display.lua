@@ -7,15 +7,15 @@
 ------------------------------------------------------
 
 -- Large Screen nick
-local SCREEN_NICK = "Video Wall Left"
+local SCREEN_NICK = "Video Wall"
 
 -- Optional control panel nick + button for manual refresh
--- If you don't have this yet, just leave PANEL_NICK = "".
-local PANEL_NICK  = "Control Room Left 1"  -- or "" to disable
+-- If you do not have this yet, set PANEL_NICK = "".
+local PANEL_NICK  = "Factory Overview Panel"  -- or "" to disable
 
 -- Button position on that panel (Large Vertical Control Panel)
-local BTN_X            = 1
-local BTN_Y            = 9
+local BTN_X            = 0
+local BTN_Y            = 0
 local BTN_PANEL_INDEX  = 0     -- 0/1/2 for vertical panel
 
 -- Auto refresh interval in seconds
@@ -48,12 +48,24 @@ local function log(msg)
     print("[factory-display] " .. msg)
 end
 
+-- Get a string like "2025-11-16T02:14:32" or nil if magicTime is missing
+local function get_time_string()
+    if not computer.magicTime then
+        return nil
+    end
+    local ok, unix, culture, iso = pcall(computer.magicTime)
+    if not ok then
+        return nil
+    end
+    return iso or culture or tostring(unix)
+end
+
 ------------------------------------------------------
 -- SCAN MANUFACTURERS
 ------------------------------------------------------
 
 local function scan_manufacturers()
-    -- Manufacturer is the base for all recipe-using machines
+    -- Manufacturer is the base for all recipe using machines
     local ids = component.findComponent(classes.Manufacturer)
     local manufacturers = component.proxy(ids or {})
 
@@ -99,7 +111,7 @@ local function init_gpu_screen()
     -- 1) Try to find the nicked Large Screen "Video Wall" on the network
     local ids = component.findComponent(SCREEN_NICK)
     if ids and #ids > 0 then
-        screen = component.proxy(ids[1])   -- << IMPORTANT: pick first, not whole table
+        screen = component.proxy(ids[1])
         log("Using screen by nick: " .. SCREEN_NICK)
     end
 
@@ -123,11 +135,10 @@ local function init_gpu_screen()
         end
     end
 
-    -- Now screen is a single Trace<Object>, not a table
     gpu:bindScreen(screen)
     local w, h = gpu:getSize()
 
-    -- Clear the screen
+    -- Clear the screen once at start
     gpu:setBackground(0, 0, 0, 0)
     gpu:fill(0, 0, w, h, " ")
     gpu:flush()
@@ -176,7 +187,11 @@ end
 -- RENDER TABLE ON SCREEN
 ------------------------------------------------------
 
-local function draw_table(gpu, w, h, stats, total)
+local function draw_table(gpu, w, h, stats, total, last_time)
+    -- Clear every frame so old rows do not linger
+    gpu:setBackground(0, 0, 0, 0)
+    gpu:fill(0, 0, w, h, " ")
+
     -- Column layout
     local colBuildingWidth = 18
     local colRecipeWidth   = 40
@@ -195,8 +210,21 @@ local function draw_table(gpu, w, h, stats, total)
 
     local row = 0
 
-    -- Title
-    drawLine(row, "Factory Overview (" .. SCREEN_NICK .. ")")
+    -- Title and last refresh line
+    local title = "Factory Overview (" .. SCREEN_NICK .. ")"
+    if row < h then
+        gpu:setText(0, row, title)
+        if last_time then
+            local label = "Last: " .. last_time
+            local x = w - #label
+            if x < #title + 2 then
+                x = #title + 2
+            end
+            if x < w then
+                gpu:setText(x, row, label)
+            end
+        end
+    end
     row = row + 2
 
     -- Header
@@ -254,7 +282,7 @@ local function draw_table(gpu, w, h, stats, total)
             break
         end
 
-        -- Per-building subtotal row
+        -- Per building subtotal row
         local subtotal =
             padRight(buildingType, colBuildingWidth) .. " " ..
             padRight("<ALL>",      colRecipeWidth)   .. " " ..
@@ -288,8 +316,13 @@ end
 
 local function refresh(gpu, w, h)
     local stats, total = scan_manufacturers()
-    draw_table(gpu, w, h, stats, total)
-    log("Display refreshed")
+    local time_str = get_time_string()
+    draw_table(gpu, w, h, stats, total, time_str)
+    if time_str then
+        log("Display refreshed at " .. time_str)
+    else
+        log("Display refreshed")
+    end
 end
 
 ------------------------------------------------------
