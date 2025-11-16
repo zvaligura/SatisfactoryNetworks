@@ -7,15 +7,15 @@
 ------------------------------------------------------
 
 -- Large Screen nick
-local SCREEN_NICK = "Video Wall"
+local SCREEN_NICK = "Video Wall Left"
 
 -- Optional control panel nick + button for manual refresh
 -- If you do not have this yet, set PANEL_NICK = "".
-local PANEL_NICK  = "Factory Overview Panel"  -- or "" to disable
+local PANEL_NICK  = "Control Room Left 1"  -- or "" to disable
 
 -- Button position on that panel (Large Vertical Control Panel)
-local BTN_X            = 0
-local BTN_Y            = 0
+local BTN_X            = 1
+local BTN_Y            = 9
 local BTN_PANEL_INDEX  = 0     -- 0/1/2 for vertical panel
 
 -- Auto refresh interval in seconds
