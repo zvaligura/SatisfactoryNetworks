@@ -1,4 +1,4 @@
-a-- factory-display.lua
+-- factory-display.lua
 -- Discover all Manufacturer buildings and render a summary on "Video Wall".
 -- Auto refresh every 60s and manual refresh via a panel button.
 -- Shows "Last: 11/15 @ 8:35:38pm" in the top right (Central time).
@@ -23,7 +23,7 @@ local BTN_PANEL_INDEX  = 0     -- 0 or 1 or 2 for vertical panel
 -- Auto refresh interval in seconds
 local REFRESH_INTERVAL = 60
 
--- Optional: cap the max number of data rows printed
+-- Optional: cap the max number of recipe rows printed
 local MAX_ROWS = 200
 
 -- Timezone offset from the time returned by computer.magicTime()
@@ -175,8 +175,7 @@ local function safe_prop(obj, key)
     return nil
 end
 
--- Turn a Manufacturer type into a nice building name:
--- prefer displayName or name over internalName (which looks like FIRCLASS_21478206)
+-- Turn a Manufacturer type into a nice building name
 local function get_building_display_name(m)
     local t = m:getType()
     if not t then
@@ -193,8 +192,7 @@ local function get_building_display_name(m)
     return dn
 end
 
--- Turn a Recipe class into a nice recipe name:
--- prefer the Recipe.name property (e.g. "Copper Sheet", "Alternate: Copper Sheet")
+-- Turn a Recipe class into a nice recipe name
 local function get_recipe_display_name(recipeClass)
     if not recipeClass then
         return "<no recipe>"
@@ -225,24 +223,13 @@ local function format_rate(v)
     end
 end
 
--- Simple ASCII progress bar: [#####.....]
-local function make_progress_bar(width, ratio)
-    if width < 3 then
-        return ""
-    end
+local function format_percent_value(ratio)
     ratio = tonumber(ratio) or 0
-    if ratio < 0 then ratio = 0 end
-    if ratio > 1 then ratio = 1 end
-
-    local inner = width - 2
-    local filled = math.floor(inner * ratio + 0.5)
-    if filled < 0 then filled = 0 end
-    if filled > inner then filled = inner end
-
-    return "[" ..
-        string.rep("#", filled) ..
-        string.rep(".", inner - filled) ..
-        "]"
+    local pct = ratio * 100
+    if pct < 0 then pct = 0 end
+    pct = math.floor(pct + 0.5)
+    if pct > 999 then pct = 999 end
+    return string.format("%3d%%", pct)
 end
 
 ------------------------------------------------------
@@ -281,7 +268,10 @@ local function parse_io_entries(entries)
             if type(item) == "string" then
                 itemName = item
             elseif item then
-                itemName = safe_prop(item, "name") or safe_prop(item, "displayName") or safe_prop(item, "internalName") or itemName
+                itemName = safe_prop(item, "name")
+                         or safe_prop(item, "displayName")
+                         or safe_prop(item, "internalName")
+                         or itemName
             end
 
             amount = tonumber(amount) or 0
@@ -306,14 +296,17 @@ end
 ------------------------------------------------------
 
 -- For a single machine, compute its per minute IO and potentials
+-- Returns:
+--   inPerMin, outPerMin, maxInPerMin, maxOutPerMin,
+--   inItems, outItems, potential, maxPotential
 local function get_machine_rates(m, recipeClass)
     -- Cycle time is seconds per craft at 100 percent potential
     local cycleTime = tonumber(safe_prop(m, "cycleTime")) or 0
     if cycleTime <= 0 then
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, {}, {}, 0, 0
     end
 
-    -- Potential behaves like clock speed
+    -- Potential behaves like clock speed (1.0 = 100%)
     local potential = safe_prop(m, "potential")
                   or safe_prop(m, "currentPotential")
                   or 1
@@ -337,20 +330,33 @@ local function get_machine_rates(m, recipeClass)
 
     local inPerMin, outPerMin    = 0, 0
     local maxInPerMin, maxOutPerMin = 0, 0
+    local inItems  = {}
+    local outItems = {}
 
-    for _, amt in pairs(inMap) do
+    for itemName, amt in pairs(inMap) do
         amt = tonumber(amt) or 0
-        inPerMin     = inPerMin     + amt * cyclesPerMin
-        maxInPerMin  = maxInPerMin  + amt * maxCyclesPerMin
+        if amt > 0 then
+            local cur = amt * cyclesPerMin
+            local maxv = amt * maxCyclesPerMin
+            inPerMin    = inPerMin    + cur
+            maxInPerMin = maxInPerMin + maxv
+            inItems[itemName] = { cur = cur, max = maxv }
+        end
     end
 
-    for _, amt in pairs(outMap) do
+    for itemName, amt in pairs(outMap) do
         amt = tonumber(amt) or 0
-        outPerMin    = outPerMin    + amt * cyclesPerMin
-        maxOutPerMin = maxOutPerMin + amt * maxCyclesPerMin
+        if amt > 0 then
+            local cur = amt * cyclesPerMin
+            local maxv = amt * maxCyclesPerMin
+            outPerMin    = outPerMin    + cur
+            maxOutPerMin = maxOutPerMin + maxv
+            outItems[itemName] = { cur = cur, max = maxv }
+        end
     end
 
-    return inPerMin, outPerMin, maxInPerMin, maxOutPerMin
+    return inPerMin, outPerMin, maxInPerMin, maxOutPerMin,
+           inItems, outItems, potential, maxPotential
 end
 
 local function scan_manufacturers()
@@ -359,7 +365,11 @@ local function scan_manufacturers()
     local manufacturers = component.proxy(ids or {})
 
     -- stats[buildingType][recipeName] = {
-    --   count, inPerMin, outPerMin, maxInPerMin, maxOutPerMin
+    --   count,
+    --   inPerMin, outPerMin, maxInPerMin, maxOutPerMin,
+    --   inItems[itemName]  = { cur, max },
+    --   outItems[itemName] = { cur, max },
+    --   potentialSum, maxPotentialSum
     -- }
     local stats = {}
     local totalCount = 0
@@ -380,16 +390,21 @@ local function scan_manufacturers()
         local r = recipes[recipeName]
         if not r then
             r = {
-                count        = 0,
-                inPerMin     = 0,
-                outPerMin    = 0,
-                maxInPerMin  = 0,
-                maxOutPerMin = 0
+                count           = 0,
+                inPerMin        = 0,
+                outPerMin       = 0,
+                maxInPerMin     = 0,
+                maxOutPerMin    = 0,
+                inItems         = {},
+                outItems        = {},
+                potentialSum    = 0,
+                maxPotentialSum = 0
             }
             recipes[recipeName] = r
         end
 
-        local inPerMin, outPerMin, maxInPerMin, maxOutPerMin =
+        local inPerMin, outPerMin, maxInPerMin, maxOutPerMin,
+              inItems, outItems, potential, maxPotential =
             get_machine_rates(m, recipeClass)
 
         r.count        = r.count + 1
@@ -397,6 +412,30 @@ local function scan_manufacturers()
         r.outPerMin    = r.outPerMin    + outPerMin
         r.maxInPerMin  = r.maxInPerMin  + maxInPerMin
         r.maxOutPerMin = r.maxOutPerMin + maxOutPerMin
+        r.potentialSum    = r.potentialSum    + (potential or 0)
+        r.maxPotentialSum = r.maxPotentialSum + (maxPotential or 0)
+
+        -- Aggregate per-item input rates
+        for itemName, data in pairs(inItems) do
+            local ri = r.inItems[itemName]
+            if not ri then
+                ri = { cur = 0, max = 0 }
+                r.inItems[itemName] = ri
+            end
+            ri.cur = ri.cur + (data.cur or 0)
+            ri.max = ri.max + (data.max or 0)
+        end
+
+        -- Aggregate per-item output rates
+        for itemName, data in pairs(outItems) do
+            local ro = r.outItems[itemName]
+            if not ro then
+                ro = { cur = 0, max = 0 }
+                r.outItems[itemName] = ro
+            end
+            ro.cur = ro.cur + (data.cur or 0)
+            ro.max = ro.max + (data.max or 0)
+        end
 
         totalCount = totalCount + 1
     end
@@ -511,19 +550,25 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
     gpu:fill(0, 0, w, h, " ")
 
     -- Column layout
-    local colBuildingWidth = 16
-    local colRecipeWidth   = 34
-    local colCountWidth    = 5
-    local colInWidth       = 10
-    local colOutWidth      = 10
-    local colBarWidth      = 18
+    local colBuildingWidth = 14
+    local colRecipeWidth   = 26
+    local colCountWidth    = 4
+    local colInNowWidth    = 8
+    local colInMaxWidth    = 8
+    local colOutNowWidth   = 8
+    local colOutMaxWidth   = 8
+    local colEffWidth      = 5
+    local colClkWidth      = 5
 
     local totalWidth = colBuildingWidth + 1 +
                        colRecipeWidth   + 1 +
                        colCountWidth    + 1 +
-                       colInWidth       + 1 +
-                       colOutWidth      + 1 +
-                       colBarWidth
+                       colInNowWidth    + 1 +
+                       colInMaxWidth    + 1 +
+                       colOutNowWidth   + 1 +
+                       colOutMaxWidth   + 1 +
+                       colEffWidth      + 1 +
+                       colClkWidth
 
     local function drawLine(y, text)
         if y >= h then
@@ -534,6 +579,15 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
         end
         gpu:setText(0, y, text)
         return true
+    end
+
+    local function sorted_keys(t)
+        local keys = {}
+        for k in pairs(t or {}) do
+            table.insert(keys, k)
+        end
+        table.sort(keys)
+        return keys
     end
 
     local row = 0
@@ -560,9 +614,12 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
         padRight("Building", colBuildingWidth) .. " " ..
         padRight("Recipe",   colRecipeWidth)   .. " " ..
         padLeft("Cnt",       colCountWidth)    .. " " ..
-        padLeft("In/min",    colInWidth)       .. " " ..
-        padLeft("Out/min",   colOutWidth)      .. " " ..
-        padRight("Util",     colBarWidth)
+        padLeft("InNow",     colInNowWidth)    .. " " ..
+        padLeft("InMax",     colInMaxWidth)    .. " " ..
+        padLeft("OutNow",    colOutNowWidth)   .. " " ..
+        padLeft("OutMax",    colOutMaxWidth)   .. " " ..
+        padLeft("Eff%",      colEffWidth)      .. " " ..
+        padLeft("Clk%",      colClkWidth)
     drawLine(row, header)
     row = row + 1
 
@@ -579,7 +636,9 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
     table.sort(buildingKeys)
 
     local dataRows = 0
-    local grandIn, grandOut, grandMaxOut = 0, 0, 0
+    local grandInNow, grandOutNow = 0, 0
+    local grandMaxIn, grandMaxOut = 0, 0
+    local grandPotentialSum, grandMachineCount = 0, 0
 
     for _, buildingType in ipairs(buildingKeys) do
         local recipes = stats[buildingType]
@@ -592,7 +651,9 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
         table.sort(recipeKeys)
 
         local buildingCount = 0
-        local buildingIn, buildingOut, buildingMaxOut = 0, 0, 0
+        local buildingInNow, buildingOutNow = 0, 0
+        local buildingMaxIn, buildingMaxOut = 0, 0
+        local buildingPotentialSum, buildingMachineCount = 0, 0
 
         for _, recipeName in ipairs(recipeKeys) do
             dataRows = dataRows + 1
@@ -600,32 +661,108 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
 
             local r = recipes[recipeName]
 
-            buildingCount  = buildingCount  + (r.count or 0)
-            buildingIn     = buildingIn     + (r.inPerMin or 0)
-            buildingOut    = buildingOut    + (r.outPerMin or 0)
-            buildingMaxOut = buildingMaxOut + (r.maxOutPerMin or 0)
+            buildingCount        = buildingCount        + (r.count or 0)
+            buildingInNow        = buildingInNow        + (r.inPerMin or 0)
+            buildingOutNow       = buildingOutNow       + (r.outPerMin or 0)
+            buildingMaxIn        = buildingMaxIn        + (r.maxInPerMin or 0)
+            buildingMaxOut       = buildingMaxOut       + (r.maxOutPerMin or 0)
+            buildingPotentialSum = buildingPotentialSum + (r.potentialSum or 0)
+            buildingMachineCount = buildingMachineCount + (r.count or 0)
 
-            grandIn        = grandIn        + (r.inPerMin or 0)
-            grandOut       = grandOut       + (r.outPerMin or 0)
-            grandMaxOut    = grandMaxOut    + (r.maxOutPerMin or 0)
+            grandInNow        = grandInNow        + (r.inPerMin or 0)
+            grandOutNow       = grandOutNow       + (r.outPerMin or 0)
+            grandMaxIn        = grandMaxIn        + (r.maxInPerMin or 0)
+            grandMaxOut       = grandMaxOut       + (r.maxOutPerMin or 0)
+            grandPotentialSum = grandPotentialSum + (r.potentialSum or 0)
+            grandMachineCount = grandMachineCount + (r.count or 0)
 
-            local util = 0
+            local effRatio = 0
             if r.maxOutPerMin and r.maxOutPerMin > 0 then
-                util = (r.outPerMin or 0) / r.maxOutPerMin
+                effRatio = (r.outPerMin or 0) / r.maxOutPerMin
+            end
+
+            local avgClockRatio = 0
+            if r.count and r.count > 0 then
+                -- potential is 1.0 for 100%
+                avgClockRatio = (r.potentialSum or 0) / r.count
             end
 
             local line =
                 padRight(buildingType, colBuildingWidth) .. " " ..
                 padRight(recipeName,   colRecipeWidth)   .. " " ..
                 padLeft(r.count or 0,  colCountWidth)    .. " " ..
-                padLeft(format_rate(r.inPerMin or 0),   colInWidth)  .. " " ..
-                padLeft(format_rate(r.outPerMin or 0),  colOutWidth) .. " " ..
-                padRight(make_progress_bar(colBarWidth, util), colBarWidth)
+                padLeft(format_rate(r.inPerMin or 0),    colInNowWidth)  .. " " ..
+                padLeft(format_rate(r.maxInPerMin or 0), colInMaxWidth)  .. " " ..
+                padLeft(format_rate(r.outPerMin or 0),   colOutNowWidth) .. " " ..
+                padLeft(format_rate(r.maxOutPerMin or 0),colOutMaxWidth) .. " " ..
+                padLeft(format_percent_value(effRatio),  colEffWidth)    .. " " ..
+                padLeft(format_percent_value(avgClockRatio), colClkWidth)
 
             if not drawLine(row, line) then
                 break
             end
             row = row + 1
+
+            if row >= h then
+                break
+            end
+
+            -- Per-item breakdown for multi-input/multi-output recipes
+            local inKeys  = sorted_keys(r.inItems or {})
+            local outKeys = sorted_keys(r.outItems or {})
+
+            local inCount, outCount = 0, 0
+            for _ in pairs(r.inItems or {}) do inCount = inCount + 1 end
+            for _ in pairs(r.outItems or {}) do outCount = outCount + 1 end
+
+            -- Only show subrows if there are multiple inputs or outputs
+            if (inCount > 1) or (outCount > 1) then
+                -- Inputs
+                for _, itemName in ipairs(inKeys) do
+                    local item = r.inItems[itemName]
+                    local sub =
+                        padRight("", colBuildingWidth) .. " " ..
+                        padRight("IN: " .. itemName, colRecipeWidth) .. " " ..
+                        padLeft("", colCountWidth)    .. " " ..
+                        padLeft(format_rate(item.cur or 0), colInNowWidth)  .. " " ..
+                        padLeft(format_rate(item.max or 0), colInMaxWidth)  .. " " ..
+                        padLeft("", colOutNowWidth)   .. " " ..
+                        padLeft("", colOutMaxWidth)   .. " " ..
+                        padLeft("", colEffWidth)      .. " " ..
+                        padLeft("", colClkWidth)
+
+                    if not drawLine(row, sub) then
+                        break
+                    end
+                    row = row + 1
+                    if row >= h then break end
+                end
+
+                if row >= h then
+                    break
+                end
+
+                -- Outputs
+                for _, itemName in ipairs(outKeys) do
+                    local item = r.outItems[itemName]
+                    local sub =
+                        padRight("", colBuildingWidth) .. " " ..
+                        padRight("OUT: " .. itemName, colRecipeWidth) .. " " ..
+                        padLeft("", colCountWidth)    .. " " ..
+                        padLeft("", colInNowWidth)   .. " " ..
+                        padLeft("", colInMaxWidth)   .. " " ..
+                        padLeft(format_rate(item.cur or 0), colOutNowWidth) .. " " ..
+                        padLeft(format_rate(item.max or 0), colOutMaxWidth) .. " " ..
+                        padLeft("", colEffWidth)      .. " " ..
+                        padLeft("", colClkWidth)
+
+                    if not drawLine(row, sub) then
+                        break
+                    end
+                    row = row + 1
+                    if row >= h then break end
+                end
+            end
 
             if row >= h then
                 break
@@ -639,16 +776,24 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
         -- Per building subtotal row
         local utilB = 0
         if buildingMaxOut > 0 then
-            utilB = buildingOut / buildingMaxOut
+            utilB = buildingOutNow / buildingMaxOut
+        end
+
+        local avgClockB = 0
+        if buildingMachineCount > 0 then
+            avgClockB = buildingPotentialSum / buildingMachineCount
         end
 
         local subtotal =
             padRight(buildingType, colBuildingWidth) .. " " ..
             padRight("<ALL>",      colRecipeWidth)   .. " " ..
             padLeft(buildingCount, colCountWidth)    .. " " ..
-            padLeft(format_rate(buildingIn),  colInWidth)  .. " " ..
-            padLeft(format_rate(buildingOut), colOutWidth) .. " " ..
-            padRight(make_progress_bar(colBarWidth, utilB), colBarWidth)
+            padLeft(format_rate(buildingInNow),  colInNowWidth)  .. " " ..
+            padLeft(format_rate(buildingMaxIn),  colInMaxWidth)  .. " " ..
+            padLeft(format_rate(buildingOutNow), colOutNowWidth) .. " " ..
+            padLeft(format_rate(buildingMaxOut), colOutMaxWidth) .. " " ..
+            padLeft(format_percent_value(utilB), colEffWidth)    .. " " ..
+            padLeft(format_percent_value(avgClockB), colClkWidth)
 
         if not drawLine(row, subtotal) then
             break
@@ -669,16 +814,23 @@ local function draw_table(gpu, w, h, stats, totalCount, last_time)
 
         local utilTotal = 0
         if grandMaxOut > 0 then
-            utilTotal = grandOut / grandMaxOut
+            utilTotal = grandOutNow / grandMaxOut
         end
-        local utilPct = math.floor(utilTotal * 100 + 0.5)
+
+        local clockTotal = 0
+        if grandMachineCount > 0 then
+            clockTotal = grandPotentialSum / grandMachineCount
+        end
 
         local footer = string.format(
-            "Total machines: %d   Total in: %s/min   Total out: %s/min   Util: %d%%",
+            "Total machines: %d   In: %s/%s per min   Out: %s/%s per min   Eff: %s   Clk: %s",
             totalCount or 0,
-            format_rate(grandIn),
-            format_rate(grandOut),
-            utilPct
+            format_rate(grandInNow),
+            format_rate(grandMaxIn),
+            format_rate(grandOutNow),
+            format_rate(grandMaxOut),
+            format_percent_value(utilTotal),
+            format_percent_value(clockTotal)
         )
         drawLine(row, footer)
     end
